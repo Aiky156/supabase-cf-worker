@@ -1,0 +1,22 @@
+{
+  "name": "supabase-cf-worker",
+  "version": "1.0.0",
+  "description": "High-performance Cloudflare Worker reverse proxy for Supabase",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "keywords": [
+    "supabase",
+    "cloudflare-worker",
+    "reverse-proxy",
+    "cors"
+  ],
+  "author": "Aiky156",
+  "license": "MIT",
+  "devDependencies": {
+    "wrangler": "^3.109.2"
+  }
+}
