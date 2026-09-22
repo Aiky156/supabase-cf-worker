@@ -8,8 +8,14 @@
 // 默认兜底的 Supabase 项目 ref (当未指定子域名或路径前缀时使用)
 const FALLBACK_DEFAULT_REF = 'nqrsydzsyowmrdqsclzj';
 
-// 常见 Supabase 项目 ID 格式为 10~40 位小写字母/数字
-const REF_REGEX = /^[a-z0-9_-]{10,40}$/;
+// Supabase 官方保留的根服务路径（绝不能误当成 project-ref）
+const SUPABASE_RESERVED_PATHS = new Set(['rest', 'auth', 'storage', 'functions', 'realtime', 'graphql', 'v1']);
+
+// 自定义代理域名中常见的前缀（不能当成 project-ref）
+const IGNORED_HOST_PREFIXES = new Set(['supabase-proxy', 'supabase', 'proxy', 'api', 'db', 'sb', 'worker', 'workers', 'www']);
+
+// Supabase 项目 ID 通常为 20 位小写字母或包含连字符 (15~40位)
+const REF_REGEX = /^[a-z0-9_-]{15,40}$/;
 
 export default {
   async fetch(request, env, ctx) {
@@ -66,18 +72,24 @@ export default {
     let projectRef = null;
     let targetPath = url.pathname;
 
-    // 方式 A：从子域名识别 (例如 nqrsydzsyowmrdqsclzj.db.aikeyu.cn)
+    // 方式 A：从子域名识别 (排除代理自身的前缀如 supabase-proxy / db / api)
     const hostParts = url.hostname.split('.');
-    if (hostParts.length >= 3 && REF_REGEX.test(hostParts[0])) {
-      projectRef = hostParts[0];
+    if (hostParts.length >= 3) {
+      const candidate = hostParts[0].toLowerCase();
+      if (!IGNORED_HOST_PREFIXES.has(candidate) && REF_REGEX.test(candidate)) {
+        projectRef = candidate;
+      }
     }
 
     // 方式 B：从路径第一段识别 (例如 /nqrsydzsyowmrdqsclzj/rest/v1/...)
     if (!projectRef) {
       const segments = url.pathname.split('/').filter(Boolean);
-      if (segments.length > 0 && REF_REGEX.test(segments[0])) {
-        projectRef = segments[0];
-        targetPath = '/' + segments.slice(1).join('/');
+      if (segments.length > 0) {
+        const first = segments[0].toLowerCase();
+        if (!SUPABASE_RESERVED_PATHS.has(first) && REF_REGEX.test(first)) {
+          projectRef = first;
+          targetPath = '/' + segments.slice(1).join('/');
+        }
       }
     }
 
