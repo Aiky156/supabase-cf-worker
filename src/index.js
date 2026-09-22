@@ -1,42 +1,28 @@
 /**
- * Cloudflare Worker Reverse Proxy for Supabase
+ * Cloudflare Worker Reverse Proxy for Supabase (纯粹专注版)
  *
- * 突破国内 GFW 对 *.supabase.co 的 SNI 阻断 / TCP RST (os error 104)
- * 运行在 Cloudflare 全球边缘网络，支持全量 REST、Auth、Storage 与 WebSocket (Realtime) 转发。
+ * 专注于将所有流量稳定转发至指定的 Supabase 数据库
+ * 原生支持 REST、Auth、Storage、WebSocket (Realtime) 及全自动 CORS。
  */
 
-// 默认兜底的 Supabase 项目 ref (当未指定子域名或路径前缀时使用)
-const FALLBACK_DEFAULT_REF = 'nqrsydzsyowmrdqsclzj';
-
-// Supabase 官方保留的根服务路径（绝不能误当成 project-ref）
-const SUPABASE_RESERVED_PATHS = new Set(['rest', 'auth', 'storage', 'functions', 'realtime', 'graphql', 'v1']);
-
-// 自定义代理域名中常见的前缀（不能当成 project-ref）
-const IGNORED_HOST_PREFIXES = new Set(['supabase-proxy', 'supabase', 'proxy', 'api', 'db', 'sb', 'worker', 'workers', 'www']);
-
-// Supabase 项目 ID 通常为 20 位小写字母或包含连字符 (15~40位)
-const REF_REGEX = /^[a-z0-9_-]{15,40}$/;
+// 默认上游目标
+const DEFAULT_UPSTREAM = 'nqrsydzsyowmrdqsclzj.supabase.co';
 
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
-    // 1. 探活检查与说明界面
+    // 1. 探活与状态检查
     if (url.pathname === '/' || url.pathname === '/health') {
-      const defaultRef = env?.DEFAULT_SUPABASE_REF || FALLBACK_DEFAULT_REF;
+      const target = env?.TARGET_HOST || DEFAULT_UPSTREAM;
       return new Response(
         JSON.stringify(
           {
             status: 'ok',
-            service: 'supabase-cloudflare-worker-proxy',
-            default_target: `${defaultRef}.supabase.co`,
+            service: 'supabase-proxy',
+            target: target,
             colo: request.cf?.colo || 'unknown',
             client_ip: request.headers.get('cf-connecting-ip') || 'unknown',
-            supported_routing: [
-              '1. Path-based: https://<domain>/<project-ref>/rest/v1/...',
-              '2. Subdomain-based: https://<project-ref>.<domain>/rest/v1/...',
-              '3. Default fallback: https://<domain>/rest/v1/... -> targets default ref',
-            ],
             time: new Date().toISOString(),
           },
           null,
@@ -52,7 +38,7 @@ export default {
       );
     }
 
-    // 2. 处理浏览器跨域预检 (CORS Preflight)
+    // 2. 浏览器 CORS 跨域预检处理
     if (request.method === 'OPTIONS') {
       const origin = request.headers.get('Origin') || '*';
       const reqHeaders = request.headers.get('Access-Control-Request-Headers') || '*';
@@ -68,56 +54,17 @@ export default {
       });
     }
 
-    // 3. 识别目标 Project Ref
-    let projectRef = null;
-    let targetPath = url.pathname;
+    // 3. 构建目标上游地址
+    const targetHost = env?.TARGET_HOST || DEFAULT_UPSTREAM;
+    const targetUrl = new URL(url.pathname + url.search, `https://${targetHost}`);
 
-    // 方式 A：从子域名识别 (排除代理自身的前缀如 supabase-proxy / db / api)
-    const hostParts = url.hostname.split('.');
-    if (hostParts.length >= 3) {
-      const candidate = hostParts[0].toLowerCase();
-      if (!IGNORED_HOST_PREFIXES.has(candidate) && REF_REGEX.test(candidate)) {
-        projectRef = candidate;
-      }
-    }
-
-    // 方式 B：从路径第一段识别 (例如 /nqrsydzsyowmrdqsclzj/rest/v1/...)
-    if (!projectRef) {
-      const segments = url.pathname.split('/').filter(Boolean);
-      if (segments.length > 0) {
-        const first = segments[0].toLowerCase();
-        if (!SUPABASE_RESERVED_PATHS.has(first) && REF_REGEX.test(first)) {
-          projectRef = first;
-          targetPath = '/' + segments.slice(1).join('/');
-        }
-      }
-    }
-
-    // 方式 C：从自定义 Header 识别 (x-supabase-ref)
-    if (!projectRef) {
-      const headerRef = request.headers.get('x-supabase-ref');
-      if (headerRef && REF_REGEX.test(headerRef.trim())) {
-        projectRef = headerRef.trim();
-      }
-    }
-
-    // 方式 D：环境变量或代码保底默认值
-    if (!projectRef) {
-      projectRef = env?.DEFAULT_SUPABASE_REF || FALLBACK_DEFAULT_REF;
-    }
-
-    const targetHost = `${projectRef}.supabase.co`;
-    const targetOrigin = `https://${targetHost}`;
-    const targetUrl = new URL(targetPath + url.search, targetOrigin);
-
-    // 4. 构建转发请求 Headers
+    // 4. 请求头清洗与伪装
     const forwardHeaders = new Headers(request.headers);
     forwardHeaders.set('host', targetHost);
     forwardHeaders.delete('x-forwarded-host');
     forwardHeaders.delete('x-forwarded-proto');
-    forwardHeaders.delete('x-supabase-ref');
 
-    // 5. 支持 WebSocket 升级 (Supabase Realtime)
+    // 5. WebSocket 协议透传 (Supabase Realtime)
     if (request.headers.get('Upgrade') === 'websocket') {
       return fetch(targetUrl.toString(), {
         method: request.method,
@@ -135,13 +82,13 @@ export default {
       init.body = request.body;
     }
 
-    // 6. 执行上游请求并处理响应
+    // 6. 执行转发
     try {
       const upstreamRes = await fetch(targetUrl.toString(), init);
 
       const responseHeaders = new Headers(upstreamRes.headers);
 
-      // 附加 CORS 跨域头以支持前端直接调用
+      // 附加 CORS 头支持直接调用
       const origin = request.headers.get('Origin');
       if (origin) {
         responseHeaders.set('Access-Control-Allow-Origin', origin);
@@ -151,8 +98,7 @@ export default {
       }
       responseHeaders.set('Access-Control-Expose-Headers', '*');
 
-      // 附加调试标识
-      responseHeaders.set('x-proxied-by', 'cloudflare-worker');
+      responseHeaders.set('x-proxied-by', 'supabase-cf-worker');
       responseHeaders.set('x-proxied-target', targetHost);
 
       return new Response(upstreamRes.body, {
@@ -164,7 +110,7 @@ export default {
       return new Response(
         JSON.stringify(
           {
-            error: `Cloudflare Worker Supabase Proxy Error: ${err.message}`,
+            error: `Supabase Proxy Error: ${err.message}`,
             target: targetHost,
             time: new Date().toISOString(),
           },

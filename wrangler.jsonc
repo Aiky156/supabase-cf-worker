@@ -4,6 +4,6 @@
   "main": "src/index.js",
   "compatibility_date": "2024-09-22",
   "vars": {
-    "DEFAULT_SUPABASE_REF": "nqrsydzsyowmrdqsclzj"
+    "TARGET_HOST": "nqrsydzsyowmrdqsclzj.supabase.co"
   }
 }
